@@ -1,49 +1,47 @@
 import torch
 
+def deboor(x: torch.Tensor, t: torch.Tensor, c: torch.Tensor, p: int):
+    """Evaluates S(x).
+
+    Arguments
+    ---------
+    x: Position. 
+    t: Array of knot positions, unpadded (and potentially unsorted).
+    c: Array of control points.
+    p: Degree of B-spline. 
+    """
+    t, _ = torch.sort(t, dim=-1, stable=True)
+    k = torch.gt(x, t.unsqueeze(-1)).sum(dim=-2) - 1 + p
+    if len(t.shape) == 1:
+        t = t.unsqueeze(0)
+    t = torch.nn.functional.pad(t, (p, p), mode='replicate')
+    d = c[torch.arange(-p, 1, 1).unsqueeze(-1) + k - p]
+
+    for r in range(1, p + 1):
+        for j in range(p, r - 1, -1):
+            alpha = (x - t.index_select(-1, j + k - p)) / (t.index_select(-1, j + 1 + k - r) - t.index_select(-1, j + k - p)) 
+            d[..., j, :] = (1.0 - alpha) * d[..., j - 1, :] + alpha * d[..., j, :]
+    return d[..., p, :]
 
 class BSpline(torch.nn.Module):
     def __init__(self, knots: torch.Tensor, order: int, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.knots = knots
         self.order = order
-        self.p = torch.tensor(self.order - 1).long()
-        self.n = self.knots.size(-1) - self.order
-        self.nrange = torch.arange(0, self.n, 1, dtype=torch.long)
-        self.weights = torch.ones(
+        self.p = self.order - 1
+        self.n = self.knots.size(-1) - self.p
+        self.control_points = torch.ones(
             (self.n,), device=self.knots.device, dtype=self.knots.dtype
         )
-
-    def eval_spline(self, x: torch.Tensor, i: torch.LongTensor) -> torch.Tensor:
-        while len(i.shape) <= 1:
-            i = i.unsqueeze(-1)
-        ret = torch.zeros(*x.shape, *i.shape, device=x.device, dtype=x.dtype).squeeze()
-        if not torch.is_nonzero(self.p):
-            ret += (x < self.knots[i + 1]) & (x >= self.knots[i])
-        else:
-            # if self.knots[i + self.p] != self.knots[i]:
-            ret += (
-                (x - self.knots[i])
-                / (self.knots[i + self.p] - self.knots[i])
-                * self.eval_spline(x, i)
-            )
-            # if self.knots[i + self.p + 1] != self.knots[i + 1]:
-            ret += (
-                (self.knots[i + self.p + 1] - x)
-                / (self.knots[i + self.p + 1] - self.knots[i + 1])
-                * self.eval_spline(x, i + 1)
-            )
-        return ret
-
-    def spline(self, x: torch.Tensor) -> torch.Tensor:
-        return self.eval_spline(x, self.nrange)
+        
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        return self.weights @ self.spline(input)
+        return deboor(input, self.knots, self.control_points, self.p)
 
 
 def main():
-    s = BSpline(torch.arange(0.0, 1.1, 0.1), 3)
-    x = torch.arange(0.0, 1.01, 0.01)
+    s = BSpline(torch.arange(0.0, 1.1, 0.1), 2)
+    x = torch.arange(0.05, 1.05, 0.05)
     print(s(x))
 
 
